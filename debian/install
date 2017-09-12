@@ -1,0 +1,15 @@
+install_vision usr/bin
+CoreServices.war tmp
+elbridge.tar.gz tmp
+mongo_config.zip tmp
+mongo.service tmp
+redis_config.zip tmp
+replenishment.tar.gz tmp
+tomcat_config.zip tmp
+data.zip tmp
+elbridge_config.zip tmp
+mongod.service tmp
+rabbitmq_config.zip tmp 
+replenishment tmp
+rfid-gw_1.1.1.release_debian.tar.gz tmp
+vision.war tmp

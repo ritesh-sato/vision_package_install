@@ -1,0 +1,430 @@
+#!/bin/bash
+
+###################################
+#  Install Gateway 
+###################################
+gateway_tmp_dir=/tmp/vision/gateway
+if [ -d "$gateway_tmp_dir" ]; then
+ sudo rm -r $gateway_tmp_dir
+fi
+sudo mkdir -p $gateway_tmp_dir
+sudo apt-get update
+
+# install gateway prerequisites (java, python, openssh, etc)
+sudo apt-get install -y default-jdk python openssh-server sysfsutils
+
+# unzip gateway and elbridge packages
+#wget --user=admin --password=admin123 "http://192.168.5.11:8081/repository/vision-releases/1.1/vision-third-party/rfid-gw_1.1.1.release_debian.tar.gz" -P $gateway_tmp_dir
+sudo cp /tmp/rfid-gw_1.1.1.release_debian.tar.gz $gateway_tmp_dir/
+sudo tar -xzf $gateway_tmp_dir/rfid-gw_1.1.1.release_debian.tar.gz -C $gateway_tmp_dir
+
+
+# install gateway with default SGS mesh on mesh central
+#wget --user=admin --password=admin123 "http://192.168.5.11:8081/repository/vision-releases/1.1/vision-third-party/install" -P $gateway_tmp_dir
+sudo cp /tmp/install $gateway_tmp_dir
+sudo $gateway_tmp_dir/install -m 568342FD6B0BE7BD366D20490028093AE4CC00794AB7750F132FF27634ECE9E1 -mu http://meshcentral.com
+
+
+# edit gateway.cfg to enable upstream MQTT
+sed -i 's/upstream.mqtt.broker.enabled = false/upstream.mqtt.broker.enabled = true/' /opt/rfid-gw/config/gateway.cfg
+
+# remove apache2
+sudo rm -R /var/lib/apache2
+sudo apt-get -y remove apache2*
+
+# restart gateway
+sudo service rfid-gw restart
+
+sudo rm -r $gateway_tmp_dir
+
+
+####################################################
+#     Install Mongodb
+####################################################
+
+# installation tmp directory
+mongo_tmp_dir=/tmp/vision/mongo
+if [ -d "$mongo_tmp_dir" ]; then
+   sudo rm - r $mongo_tmp_dir
+fi
+sudo mkdir -p $mongo_tmp_dir
+echo "installing mongodb...."
+# check mongod process already running
+sudo service mongod stop
+# wait 30 sec  mongo not stopped in a specified duration
+sleep 30
+if [ -d "/var/lib/mongodb" ]; then
+   sudo rm -r "/var/lib/mongodb"
+fi
+
+if [ -d "/var/log/mongodb" ]; then
+   sudo rm -r "/var/log/mongodb"
+fi
+
+
+if [ -e "/usr/bin/mongo" ]; then
+	sudo rm /usr/bin/mongo
+fi 
+
+
+if [ -e "/usr/bin/mongod" ]; then
+	sudo rm /usr/bin/mongod
+fi
+
+if [ -e "/etc/mongod.conf" ]; then
+ sudo rm /etc/mongod.conf
+fi 
+yes Y | sudo apt-get purge mongodb-org*
+echo "Remove Data Directories..."
+
+# Import the public key used by the package management system
+echo "installing mongodb..."
+sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv 0C49F3730359A14518585931BC711F9BA15703C6
+echo "ubuntu 16.04..."
+echo "deb [ arch=amd64,arm64 ] http://repo.mongodb.org/apt/ubuntu xenial/mongodb-org/3.4 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-3.4.list
+
+echo "Reload local package database..."
+sudo apt-get update
+echo "Install the MongoDB packages.."
+sudo apt-get install -y mongodb-org
+echo "Start MongoDB.."
+if [ -d "/data/db" ]; then
+  sudo rm -r /data/db
+fi
+sudo mkdir -p /data/db
+sleep 20
+#wget --user=admin --password=admin123 "http://192.168.5.11:8081/repository/vision-releases/1.1/vision-open/mongo_config.zip" -P $mongo_tmp_dir
+sudo cp /tmp/mongo_config.zip $mongo_tmp_dir
+sudo unzip $mongo_tmp_dir/mongo_config.zip -d $mongo_tmp_dir
+if [ -e "/etc/systemd/system/mongod.service" ]; then
+   sudo rm /etc/systemd/system/mongod.service
+fi
+sudo mv $mongo_tmp_dir/mongod.service /etc/systemd/system/mongod.service
+#start mongod
+echo "starting mongod...."
+sudo systemctl daemon-reload
+sudo systemctl start mongod
+sudo systemctl enable mongod
+
+#sudo mongod &
+sleep 30
+
+# back up configuration file
+echo "backing up conf file"
+
+if [ -e "/etc/mongod.orig.conf" ]; then
+ sudo rm /etc/mongod.orig.conf
+fi
+sudo cp /etc/mongod.conf /etc/mongod.orig.conf
+sed -i 's/bindIp: 127.0.0.1/#bindIp: 127.0.0.1/' /etc/mongod.conf
+# create vision_local database
+echo "configure default vision configurations"
+echo "use vision_local"|mongo
+#create user_accounts collection
+echo "db.createCollection('user_accounts')"| mongo vision_local
+echo 'db.user_accounts.insert({"_class" : "com.sgs.vision.storage.model.User","username" : "admin","password" : "0192023a7bbd73250516f069df18b500","firstName" : "SATO","lastName" : "Admin","enable" : true})' | mongo vision_local
+# create sgs user
+echo 'db.createUser({user: "sgs",pwd: "RF1Dkings",roles: [ { role: "readWrite", db: "vision_local" } ]})' | mongo vision_local
+# enable authentication
+echo "security.authorization: enabled" | tee -a /etc/mongod.conf
+# restart mongodb server
+sudo service mongod restart
+
+echo "installation mongodb completed"
+sudo rm -r $mongo_tmp_dir
+
+####################################################
+#     Install RabbitMQ
+####################################################
+rabbit_tmp_dir=/tmp/vision/rabbit
+if [ -d "$rabbit_tmp_dir" ]; then
+   sudo rm -r $rabbit_tmp_dir
+fi
+
+sudo mkdir -p $rabbit_tmp_dir
+echo "installing rabbitmq...."
+
+yes Y | sudo apt-get purge --auto-remove rabbitmq-server
+
+sudo apt-get -y install rabbitmq-server
+
+#download rabbitmq configuration from vision repository..
+echo "downloading configuration file"
+#wget --user=admin --password=admin123 "http://192.168.5.11:8081/repository/vision-releases/1.1/vision-open/rabbitmq_config.zip" -P  $rabbit_tmp_dir
+#extract config file into /tmp/directory
+sudo cp /tmp/rabbitmq_config.zip $rabbit_tmp_dir
+sudo unzip $rabbit_tmp_dir/rabbitmq_config.zip -d $rabbit_tmp_dir/
+#copy config into rabbit home (if exists clean)
+if [ -e "/etc/rabbitmq/rabbitmq.config" ]; then
+   sudo rm /etc/rabbitmq/rabbitmq.config
+fi
+if [ -e "/etc/rabbitmq/rabbitmqadmin" ]; then
+   sudo rm /etc/rabbitmq/rabbitmqadmin
+fi
+
+sudo cp $rabbit_tmp_dir/rabbitmq.config /etc/rabbitmq/
+
+# enable rabbit MQTT and management plugins
+echo "enable management console and mqtt broker"
+rabbitmq-plugins enable rabbitmq_management
+rabbitmq-plugins enable rabbitmq_mqtt
+
+
+# install rabbitmq management/rabbitmqadmin -d /etc/rabbitmq/
+wget http://127.0.0.1:15672/cli/rabbitmqadmin -P $rabbit_tmp_dir
+sudo mv $rabbit_tmp_dir/rabbitmqadmin /etc/rabbitmq/rabbitmqadmin
+sudo chown -R rabbitmq:rabbitmq /etc/rabbitmq
+sudo chmod -R 775 /etc/rabbitmq/
+sudo chmod +x /etc/rabbitmq/rabbitmqadmin
+#add service and enable
+sudo systemctl enable rabbitmq-server
+sudo systemctl start rabbitmq-server
+
+#wait for restart
+sleep 5
+
+#vision queue configurations
+
+# Add rabbitmq users
+rabbitmqctl add_user sgs RF1Dkings
+rabbitmqctl set_user_tags sgs administrator
+rabbitmqctl set_permissions -p "/" sgs ".*" ".*" ".*"
+
+rabbitmqctl add_user api api
+rabbitmqctl set_user_tags api app
+rabbitmqctl set_permissions -p "/" api ".*" ".*" ".*"
+
+rabbitmqctl add_user elbridge elbridge
+rabbitmqctl set_user_tags elbridge app
+rabbitmqctl set_permissions -p "/" elbridge ".*" ".*" ".*"
+
+rabbitmqctl add_user fitting_room_app fitting_room_app
+rabbitmqctl set_user_tags fitting_room_app app
+rabbitmqctl set_permissions -p "/" fitting_room_app ".*" ".*" ".*"
+
+rabbitmqctl add_user sales_associate_app sales_associate_app
+rabbitmqctl set_user_tags sales_associate_app app
+rabbitmqctl set_permissions -p "/" sales_associate_app ".*" ".*" ".*"
+
+rabbitmqctl add_user replenishment replenishment
+rabbitmqctl set_user_tags replenishment app
+rabbitmqctl set_permissions -p "/" replenishment ".*" ".*" ".*"
+
+# Make an Exchange
+/etc/rabbitmq/rabbitmqadmin -u sgs -p RF1Dkings declare exchange --vhost="/" name=sgs.gateway.dx type=direct
+
+# Make Queues
+/etc/rabbitmq/rabbitmqadmin -u sgs -p RF1Dkings declare queue --vhost="/" name=sgs.gateway.alerts.q durable=true
+/etc/rabbitmq/rabbitmqadmin -u sgs -p RF1Dkings declare queue --vhost="/" name=sgs.gateway.events.q durable=true
+/etc/rabbitmq/rabbitmqadmin -u sgs -p RF1Dkings declare queue --vhost="/" name=sgs.gateway.heartbeat.q durable=true
+
+# Make Binding
+/etc/rabbitmq/rabbitmqadmin -u sgs -p RF1Dkings --vhost="/" declare binding source="sgs.gateway.dx" destination_type="queue" destination="sgs.gateway.alerts.q" routing_key="alerts"
+/etc/rabbitmq/rabbitmqadmin -u sgs -p RF1Dkings --vhost="/" declare binding source="sgs.gateway.dx" destination_type="queue" destination="sgs.gateway.events.q" routing_key="events"
+/etc/rabbitmq/rabbitmqadmin -u sgs -p RF1Dkings --vhost="/" declare binding source="sgs.gateway.dx" destination_type="queue" destination="sgs.gateway.heartbeat.q" routing_key="heartbeat"
+
+
+echo "installing rabbitmq  completed"
+sudo rm -r $rabbit_tmp_dir
+
+
+###################################
+#  Install Redis
+###################################
+#Tmp directory for installation
+echo "installing redis server...."
+redis_tmp_dir=/tmp/vision/redis
+if [ -d "$redis_tmp_dir" ]; then
+  sudo rm -r $redis_tmp_dir
+fi
+sudo service redis stop
+sudo mkdir -p $redis_tmp_dir
+cd $redis_tmp_dir
+
+#apt get install
+sudo apt-get -y install build-essential tcl
+#download redis-stable.tar 
+wget http://download.redis.io/redis-stable.tar.gz
+#untar redis dependencies
+sudo tar xzf redis-stable.tar.gz
+
+cd redis-stable
+#compile redis source
+sudo make
+#install redis source
+sudo make install
+
+cd $DIR
+sudo mkdir /etc/redis
+sudo mkdir /var/lib/redis
+sudo adduser --system --group --no-create-home redis
+sudo chown redis:redis /var/lib/redis
+sudo chmod 770 /var/lib/redis
+#wget --user=admin --password=admin123 "http://192.168.5.11:8081/repository/vision-releases/1.1/vision-open/redis_config.zip" -P $redis_tmp_dir
+sudo cp /tmp/redis_config.zip $redis_tmp_dir
+sudo unzip $redis_tmp_dir/redis_config.zip -d $redis_tmp_dir/
+sudo cp $redis_tmp_dir/redis.conf /etc/redis/
+sudo cp $redis_tmp_dir/redis.service /etc/systemd/system/
+
+sudo systemctl daemon-reload
+sudo systemctl start redis
+sudo systemctl enable redis
+
+echo "installation redis completed..."
+
+sudo rm -r $redis_tmp_dir
+
+####################################################
+#     Install Tomcat
+####################################################
+tomcat_tm_dir=/tmp/vision/tomcat
+if [ -d "" ]; then
+  sudo rm -r $tomcat_tm_dir
+fi
+sudo mkdir -p $tomcat_tm_dir
+echo "installing tomcat..."
+if [ -d "/opt/tomcat" ]; then
+ sudo systemctl stop tomcat
+ #sleep 30
+ sudo rm -r /opt/tomcat
+fi
+#sudo mkdir -p "/opt/tomcat"
+sudo rm -r $tmp_dir
+echo "download tomcat 8 from the apache repositories.."
+#wget http://mirror.wanxp.id/apache/tomcat/tomcat-8/v8.5.13/bin/apache-tomcat-8.5.13.tar.gz -P $tomcat_tm_dir
+wget http://apache.claz.org/tomcat/tomcat-8/v8.5.20/bin/apache-tomcat-8.5.20.tar.gz -P $tomcat_tm_dir
+#sudo tar -xzf "$tomcat_tm_dir/apache-tomcat-8.5.13.tar.gz" -C $tomcat_tm_dir
+sudo tar -xzf "$tomcat_tm_dir/apache-tomcat-8.5.20.tar.gz" -C $tomcat_tm_dir
+#sudo mv $tomcat_tm_dir/apache-tomcat-8.5.13 /opt/tomcat
+sudo mv $tomcat_tm_dir/apache-tomcat-8.5.20 /opt/tomcat
+
+echo "download tomcat config file from vision repository "
+#wget --user=admin --password=admin123 "http://192.168.5.11:8081/repository/vision-releases/1.1/vision-open/tomcat_config.zip" -P  $tomcat_tm_dir
+sudo cp /tmp/tomcat_config.zip $tomcat_tm_dir/
+sudo unzip  $tomcat_tm_dir/tomcat_config.zip -d $tomcat_tm_dir/
+
+# add tomcat:tomcat group and user and setup rights
+groupadd tomcat
+useradd -s /bin/false -g tomcat -d /opt/tomcat tomcat
+chown -hR tomcat:tomcat /opt/tomcat
+chmod -R +x /opt/tomcat/bin
+chmod g+r /opt/tomcat/conf
+
+# make tomcat start on boot
+sudo rm /etc/systemd/system/tomcat.service
+sudo cp $tomcat_tm_dir/tomcat.service /etc/systemd/system
+chown tomcat:tomcat /etc/systemd/system/tomcat.service
+chmod -R +x /etc/systemd/system/tomcat.service
+
+# change connection porand add tomcat user
+sed -i 's/Connector port="8080"/Connector port="80"/' /opt/tomcat/conf/server.xml
+sed -i 's/<\/tomcat-users>/  <user username="sgs" password="RF1Dkings" roles="manager-gui, admin-gui"\/>\n<\/tomcat-users>/' /opt/tomcat/conf/tomcat-users.xml
+
+# start and enable the tomcat service
+sudo systemctl daemon-reload
+sudo systemctl start tomcat
+sudo systemctl enable tomcat
+
+# copy config files
+#cp vision-install/conf/manager.xml /opt/tomcat/conf/Catalina/localhost
+echo 'RewriteRule ^(.*)api/v1(.*)$ $1CoreServices$2' >> '/opt/tomcat/webapps/ROOT/WEB-INF/rewrite.config'
+#cp vision-install/conf/rewrite.config /opt/tomcat/webapps/ROOT/WEB-INF/
+sed -i 's/<Context>/<Context>\n   <Valve className="org.apache.catalina.valves.rewrite.RewriteValve"\/>/' /opt/tomcat/conf/context.xml
+
+# restart tomcat
+sudo service tomcat restart
+sudo rm -r $tomcat_tm_dir
+echo "tomcat installation completed..."
+
+
+###################################
+#  Install Elbridge 
+###################################
+elbridge_tmp_dir=/tmp/vision/elbridge
+if [ -d "" ]; then
+  sudo rm -r $elbridge_tmp_dir
+fi
+sudo mkdir -p $elbridge_tmp_dir
+# unzip gateway and elbridge packages
+if [ -d "/opt/elbridge" ]; then
+ sudo rm -r /opt/elbridge
+fi
+
+#wget --user=admin --password=admin123 "http://192.168.5.11:8081/repository/vision-releases/1.1/vision-sgs/elbridge.tar.gz" -P $elbridge_tmp_dir
+sudo cp /tmp/elbridge.tar.gz $elbridge_tmp_dir
+sudo tar -xf $elbridge_tmp_dir/elbridge.tar.gz -C $elbridge_tmp_dir
+sudo mv $elbridge_tmp_dir/elbridge /opt/
+
+#wget --user=admin --password=admin123 "http://192.168.5.11:8081/repository/vision-releases/1.1/vision-sgs/elbridge_config.zip" -P $elbridge_tmp_dir
+sudo cp /tmp/elbridge_config.zip $elbridge_tmp_dir
+sudo unzip $elbridge_tmp_dir/elbridge_config.zip -d $elbridge_tmp_dir
+sudo cp $elbridge_tmp_dir/elbridge.service /etc/systemd/system/
+sudo chown -R sgs:sgs /opt/elbridge
+sudo chown -R sgs:sgs /etc/systemd/system/elbridge.service
+
+# elbridge service startup & autostart config
+sudo systemctl daemon-reload
+sudo systemctl start elbridge
+sudo systemctl enable elbridge
+
+sudo rm -r $elbridge_tmp_dir
+
+##################################
+# install replenishment app
+##################################
+replenish_tmp_dir=/tmp/vision/replenishment
+if [ -d "" ]; then
+  sudo rm -r $replenish_tmp_dir
+fi
+sudo mkdir -p $replenish_tmp_dir
+#wget --user=admin --password=admin123 "http://192.168.5.11:8081/repository/vision-releases/1.1/vision-sgs/replenishment.tar.gz" -P $replenish_tmp_dir
+sudo cp /tmp/replenishment.tar.gz $replenish_tmp_dir
+sudo tar -xf $replenish_tmp_dir/replenishment.tar.gz -C $replenish_tmp_dir
+if [ -d "/opt/replenishment" ]; then
+ sudo rm -r /opt/replenishment
+fi
+sudo mv $replenish_tmp_dir/replenishment /opt/
+sudo chown -R sgs:sgs /opt/replenishment
+#wget --user=admin --password=admin123 "http://192.168.5.11:8081/repository/vision-releases/1.1/vision-sgs/replenishment" -P $replenish_tmp_dir
+sudo cp /tmp/replenishment $replenish_tmp_dir
+sudo cp $replenish_tmp_dir/replenishment /etc/init.d
+sudo chmod +x /etc/init.d/replenishment
+sudo systemctl daemon-reload
+sudo systemctl start replenishment
+sudo systemctl enable replenishment
+sleep 10
+sudo systemctl stop replenishment
+sleep 10
+sudo systemctl start replenishment
+
+sudo rm -r $replenish_tmp_dir
+
+##################################
+# Install Vision web apps
+##################################
+cs_tmp_dir=/tmp/vision/cs
+if [ -d "" ]; then
+   sudo rm -r $cs_tmp_dir
+fi
+sudo mkdir -p $cs_tmp_dir
+#wget --user=admin --password=admin123 "http://192.168.5.11:8081/repository/vision-releases/1.1/vision-sgs/CoreServices.war" -P $cs_tmp_dir
+sudo cp /tmp/CoreServices.war $cs_tmp_dir
+sudo cp $cs_tmp_dir/CoreServices.war /opt/tomcat/webapps
+
+#sudo cp -R cs_tmp_dir/webapps/data /opt/tomcat/webapps/
+#sudo chown -R tomcat:tomcat /opt/tomcat/webapps/data
+
+#wget --user=admin --password=admin123 "http://192.168.5.11:8081/repository/vision-releases/1.1/vision-sgs/vision.war" -P $cs_tmp_dir
+sudo cp /tmp/vision.war $cs_tmp_dir
+sudo cp $cs_tmp_dir/vision.war /opt/tomcat/webapps
+
+#wget --user=admin --password=admin123 "http://192.168.5.11:8081/repository/vision-releases/1.1/vision-sgs/data.zip" -P $cs_tmp_dir
+sudo cp /tmp/data.zip $cs_tmp_dir
+sudo unzip $cs_tmp_dir/data.zip -d $cs_tmp_dir
+if [ -d "/opt/tomcat/webapps/data" ]; then
+   sudo rm -r /opt/tomcat/webapps/data
+fi
+sudo mv $cs_tmp_dir/data /opt/tomcat/webapps/
+
+sudo rm -r $cs_tmp_dir
+
